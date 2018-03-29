@@ -91,8 +91,13 @@ int main(int argc, char **argv)
     //i variable used for looping.
     int i;
 
-    //if arguments are more than 2, it would be batch mode.
-    if(argc >= 2) {
+    if(argc > 2) {
+        printf("usage:shell [batch_file],Too many arguments are entered.\n");
+        return -1;
+    }
+
+    //if the number of arguments is 2, it would be batch mode.
+    if(argc == 2) {
         //try to open file, if it fails then end with error message.
         p_file = fopen (argv[1] , "r");
         is_batch = TRUE;
