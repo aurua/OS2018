@@ -1,3 +1,4 @@
+#define _defs_h
 struct buf;
 struct context;
 struct file;

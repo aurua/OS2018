@@ -1,3 +1,4 @@
+#define _mmu_h
 // This file contains definitions for the
 // x86 memory management unit (MMU).
 
