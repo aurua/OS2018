@@ -58,7 +58,7 @@ getlev(void)
 }
 
 int
-setcpushare(int share)
+set_cpu_share(int share)
 {
   uint ticket = (MAX_TICKET / 100) * share;
   if(ticket > remain_ticket)
@@ -444,7 +444,6 @@ scheduler(void)
   struct proc *p;
   struct cpu *c = mycpu();
   c->proc = 0;
-printk_str("start scheduler");
   for(;;){
     // Enable interrupts on this processor.
     sti();
@@ -460,11 +459,12 @@ printk_str("start scheduler");
         st_proc = pq_top(&st_queue);
         pq_pop(&st_queue);
 
-  //printk_str("start stride scheduler");
-        if(st_proc->is_process && st_proc->p_proc->is_stride) {
+        if(st_proc->is_process) {
+          printk_str("enter st_proc");
           if(st_proc->p_proc->state != RUNNABLE) {
             
-            if(st_proc == st_proc->p_proc->st_proc&&!st_proc->p_proc->killed&& st_proc->p_proc->state != ZOMBIE) {
+            if(st_proc->p_proc->is_stride &&st_proc == st_proc->p_proc->st_proc&&!st_proc->p_proc->killed&& st_proc->p_proc->state != ZOMBIE) {
+              
               pq_push(&pq_tmp,st_proc);
             }
             st_proc =0;
@@ -477,9 +477,9 @@ printk_str("start scheduler");
             c->proc = p;
             switchuvm(p);
             p->state = RUNNING;
-      //printk_str("before swtch");
+      printk_str("before swtch");
             swtch(&(c->scheduler), p->context);
-      //printk_str("after swtch");
+      printk_str("after swtch");
             switchkvm();
             c->proc = 0;
             break;
@@ -493,13 +493,10 @@ printk_str("start scheduler");
             
           while(!mf_proc)
           {
-  //printk_str("before top");
 
             mf_proc = mlfq_top(&mlfq);
-  //printk_str("after top");
             mlfq_pop(&mlfq);
             if(mf_proc->p_proc->killed || mf_proc->p_proc->pid != mf_proc->pid || mf_proc->p_proc->is_stride) {
-  //printk_str("not valid");
               mf_proc = 0;
               break;
             }
@@ -522,32 +519,31 @@ printk_str("start scheduler");
                   c->proc = p;
                   switchuvm(p);
                   p->state = RUNNING;
-      //printk_str("before swtch");
                   swtch(&(c->scheduler), p->context);
-      //printk_str("after swtch");
                   switchkvm();
                   tick_used = p->tick_used;
                   mlfq.ticks += tick_used;
-                  if(tick_used == mf_proc->time_allot) {
-                    p->tick_used = 0;
+                  p->tick_used = 0;
+                  if(tick_used >= mf_proc->time_allot) {
                     (mf_proc->level)++;
                     if(mf_proc->level > LOW_LV)
                       mf_proc->level = LOW_LV;
                     setlevel(mf_proc,mf_proc->level);
                   }
+                  else
+                    mf_proc->time_allot -= tick_used;
+
                   mlfq_push(&mlfq,mf_proc);
                   if(mlfq.ticks >= BOOST_TICK)
                     mlfq_boosting(&mlfq);
                   // Process is done running for now.
                   // It should have changed its p->state before coming back.
                   c->proc = 0;
-      printk_str("else");
 
                   break;
                 }
             }
           };
-  //printk_str("while end");
                     
           while(!cq_isempty(&cq_tmp)) {
             //printk_str("cq pop");
@@ -561,42 +557,25 @@ printk_str("start scheduler");
 
         }
         //end of mlfq scheduler.
-      };
-      while(!pq_isempty(&pq_tmp))
-      {
-        struct stride_proc* st_proc = pq_top(&pq_tmp);
-        pq_pop(&pq_tmp);
-        pq_push(&pq_tmp,st_proc);
-      }
+        while(!pq_isempty(&pq_tmp))
+        {
+          struct stride_proc* st_proc = pq_top(&pq_tmp);
+          pq_pop(&pq_tmp);
+          pq_push(&pq_tmp,st_proc);
+        }
 
-      if(st_proc->is_process)
-        st_proc->pass += MAX_TICKET/(st_proc->tickets);
-      else
-        st_proc->pass += (MAX_TICKET/(st_proc->tickets+remain_ticket))*tick_used;
+        if(st_proc->is_process)
+          st_proc->pass += MAX_TICKET/(st_proc->tickets);
+        else
+          st_proc->pass += (MAX_TICKET/(st_proc->tickets+remain_ticket))*tick_used;
+
+        if(!st_proc->is_process || st_proc->p_proc->is_stride)
+          pq_push(&st_queue,st_proc);
+
+        };
       
-      if(!st_proc->is_process || st_proc->p_proc->is_stride)
-        pq_push(&st_queue,st_proc);
     }
     //end of stride scheduler.
-
-    /*
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
-
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
-
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
-
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;*/
       release(&ptable.lock);
   }
 
@@ -605,43 +584,6 @@ printk_str("start scheduler");
 
 }
 
-/*
-void
-scheduler(void)
-{
-  struct proc *p;
-  struct cpu *c = mycpu();
-  c->proc = 0;
-  
-  for(;;){
-    // Enable interrupts on this processor.
-    sti();
-
-    // Loop over process table looking for process to run.
-    acquire(&ptable.lock);
-    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
-      if(p->state != RUNNABLE)
-        continue;
-
-      // Switch to chosen process.  It is the process's job
-      // to release ptable.lock and then reacquire it
-      // before jumping back to us.
-      c->proc = p;
-      switchuvm(p);
-      p->state = RUNNING;
-
-      swtch(&(c->scheduler), p->context);
-      switchkvm();
-
-      // Process is done running for now.
-      // It should have changed its p->state before coming back.
-      c->proc = 0;
-    }
-    release(&ptable.lock);
-
-  }
-}
-*/
 
 
 // Enter scheduler.  Must hold only ptable.lock
@@ -675,10 +617,23 @@ void
 yield(void)
 {
   acquire(&ptable.lock);  //DOC: yieldlock
+  uint qnt = LOW_QNT;
   struct proc* mp = myproc();
+  switch(mp->level)
+  {
+    case HIGH_LV:
+      qnt = HIGH_QNT;
+      break;
+    case MID_LV:
+      qnt = MID_QNT;
+      break;
+    default:
+      break;
+  }
   mp->state = RUNNABLE;
   mp->tick_used++;
-  if(mp->is_sys_yield || mp->is_stride || ((struct mlfq_proc*)(mp->mf_proc))->time_allot == mp->tick_used ) {
+
+  if(mp->is_sys_yield || mp->is_stride || qnt >= mp->tick_used) {
     mp->is_sys_yield = 0;
     sched();
   }

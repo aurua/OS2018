@@ -24,4 +24,4 @@
 #define SYS_getppid 23
 #define SYS_yield 24
 #define SYS_getlev 25
-#define SYS_setcpushare 26
+#define SYS_set_cpu_share 26
