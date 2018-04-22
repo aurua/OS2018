@@ -60,6 +60,7 @@ getlev(void)
 int
 set_cpu_share(int share)
 {
+  acquire(&ptable.lock);
   uint ticket = (MAX_TICKET / 100) * share;
   if(ticket > remain_ticket)
     return -1;
@@ -73,6 +74,7 @@ set_cpu_share(int share)
   st_proc->p_proc->is_stride = 1;
   st_proc->p_proc->st_proc = st_proc;
   pq_push(&st_queue,st_proc);
+  release(&ptable.lock);
   return 0; 
 }
 
@@ -381,6 +383,8 @@ exit(void)
 
   // Jump into the scheduler, never to return.
   curproc->state = ZOMBIE;
+  if(curproc->is_stride)
+    remain_ticket += ((struct stride_proc*)curproc->st_proc)->tickets;
   sched();
   panic("zombie exit");
 }
@@ -455,21 +459,30 @@ scheduler(void)
       struct stride_proc* st_proc = 0;
       pq_init(&pq_tmp);
       while(!st_proc) {
+        //cprintf("before top\t");
         st_proc = pq_top(&st_queue);
+        //cprintf("after top\t");
         pq_pop(&st_queue);
 
         if(st_proc->is_process) {
-          cprintf("enter st_proc");
-          if(st_proc->p_proc->state != RUNNABLE) {
-            if(st_proc->p_proc->is_stride &&st_proc == st_proc->p_proc->st_proc&& st_proc->p_proc->state != ZOMBIE) {
-              cprintf("second st_proc");
-            
+          if(st_proc->p_proc->killed || st_proc->p_proc->pid != st_proc->pid || !st_proc->p_proc->is_stride) {
+              st_proc = 0;
+          cprintf("killed\t");
+              break;
+            }
+          else if(st_proc->p_proc->state != RUNNABLE) {
+            cprintf("not runnable\t");
+            if(!st_proc->p_proc->killed&& st_proc->p_proc->state != ZOMBIE) {
+              
               pq_push(&pq_tmp,st_proc);
             }
             cprintf("third st_proc");
-            st_proc =0;
-            if(pq_isempty(&st_queue))
+            
+            if(pq_isempty(&st_queue)) {
+              cprintf("queue empty\n");
               break;
+              }
+            st_proc =0;
             continue;
           }
           else {
@@ -478,9 +491,9 @@ scheduler(void)
             c->proc = p;
             switchuvm(p);
             p->state = RUNNING;
-      printk_str("before swtch");
+      //printk_str("before swtch");
             swtch(&(c->scheduler), p->context);
-      printk_str("after swtch");
+      //printk_str("after swtch");
             switchkvm();
             c->proc = 0;
             break;
@@ -488,13 +501,14 @@ scheduler(void)
         }
         //start of mlfq scheduler.
         else {
+          //cprintf("enter mlfq\n");
+          st_proc->is_free = INUSE;
           cq_init(&cq_tmp);
           struct mlfq_proc* mf_proc = 0;
           
             
           while(!mf_proc)
           {
-
             mf_proc = mlfq_top(&mlfq);
             mlfq_pop(&mlfq);
             if(mf_proc->p_proc->killed || mf_proc->p_proc->pid != mf_proc->pid || mf_proc->p_proc->is_stride) {
@@ -503,7 +517,7 @@ scheduler(void)
             }
             else {
                 if(mf_proc->p_proc->state != RUNNABLE) {
-      
+                  //cprintf("mlfq not runnable\t");
                   if(!mf_proc->p_proc->killed&& mf_proc->p_proc->state != ZOMBIE) {
         
                       cq_push(&cq_tmp,mf_proc);
@@ -511,7 +525,7 @@ scheduler(void)
                   mf_proc = 0;
                   if(mlfq_isempty(&mlfq))
                     break;
-
+                  //cprintf("mlfq not empty\n");
                   continue;
                 }
                 else {
@@ -554,28 +568,41 @@ scheduler(void)
             mlfq_push(&mlfq,mf_proc);
           };
           
-                  
 
+          break;
         }
         //end of mlfq scheduler.
         
+        //end of while
         };
       
         while(!pq_isempty(&pq_tmp))
         {
+          cprintf("inside tmp pq\t");
           struct stride_proc* st_proc = pq_top(&pq_tmp);
           pq_pop(&pq_tmp);
           pq_push(&pq_tmp,st_proc);
         }
+        if(st_proc)
+        {
+          if(st_proc->is_process)
+            st_proc->pass += MAX_TICKET/(st_proc->tickets);
+          else if(tick_used != 0)
+            st_proc->pass += (MAX_TICKET/(st_proc->tickets+remain_ticket))*tick_used;
+          else
+            st_proc->pass += (MAX_TICKET/(st_proc->tickets+remain_ticket));
+          if( st_proc && (!st_proc->is_process || st_proc->p_proc->state != ZOMBIE))
+            pq_push(&st_queue,st_proc);
 
-        if(st_proc->is_process)
-          st_proc->pass += MAX_TICKET/(st_proc->tickets);
+        }
         else
-          st_proc->pass += (MAX_TICKET/(st_proc->tickets+remain_ticket))*tick_used;
-
-          pq_push(&st_queue,st_proc);
-
-
+        {
+          
+          if(pq_isempty(&st_queue))
+            cprintf("empty st queue\n");
+          else
+            cprintf("%d\n",pq_top(&st_queue)->is_process);
+        }
 
     }
     //end of stride scheduler.

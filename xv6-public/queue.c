@@ -49,8 +49,8 @@ void
 pq_pop(struct priority_queue *pq)
 {
     uint cur;
-    pq->p_procs[1] = pq->p_procs[pq->size--];
     pq->p_procs[1]->is_free = FREE;
+    pq->p_procs[1] = pq->p_procs[pq->size--];
     cur = 1;
     while(cur * 2 <= pq->size)
     {
