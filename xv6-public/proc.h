@@ -1,4 +1,6 @@
 #define _proc_h
+#define MAX_TICKET 1e9
+#define MIN_MLFQ_TICKET 2e8
 // Per-CPU state
 struct cpu {
   uchar apicid;                // Local APIC ID
@@ -50,6 +52,12 @@ struct proc {
   struct file *ofile[NOFILE];  // Open files
   struct inode *cwd;           // Current directory
   char name[16];               // Process name (debugging)
+  uint is_stride;              // Determine stride scheduling or not
+  void* st_proc;               // Pointer for stride scheduling
+  void* mf_proc;               // Pointer for mlfq scheduling
+  uint tick_used;              // The number of ticks that ran in mlfq scheduler.
+  uint level;                  // Level in mlfq
+  uint is_sys_yield;           // is Yielded by yield syscall
 };
 
 // Process memory is laid out contiguously, low addresses first:

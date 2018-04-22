@@ -14,16 +14,108 @@ struct {
 
 static struct proc *initproc;
 
+struct stride_proc st_proc_list[NPROC+1];
+struct priority_queue st_queue;
+struct mlfq_proc mf_proc_list[CQ_SIZE];
+struct mlf_queue mlfq;
+struct circular_queue cq_tmp;
+struct priority_queue pq_tmp;
+int remain_ticket;
 int nextpid = 1;
 extern void forkret(void);
 extern void trapret(void);
 
 static void wakeup1(void *chan);
 
+struct stride_proc*
+getfreest_proc()
+{
+  int i=0;
+  for (i=0; i<NPROC; i++) {
+    if(st_proc_list[i].is_free)
+      return &st_proc_list[i];
+  }
+  panic("no free st_proc");
+  return (void*)0;
+}
+
+struct mlfq_proc*
+getfreemf_proc()
+{
+  int i=0;
+  for (i=0; i<CQ_SIZE; i++) {
+    if(mf_proc_list[i].is_free)
+      return &mf_proc_list[i];
+  }
+  panic("no free mf_proc");
+  return (void*)0;
+}
+
+int
+getlev(void)
+{
+  return myproc()->level;
+}
+
+int
+setcpushare(int share)
+{
+  uint ticket = (MAX_TICKET / 100) * share;
+  if(ticket > remain_ticket)
+    return -1;
+  struct stride_proc* st_proc = getfreest_proc();
+  st_proc->is_process = PROCESS;
+  st_proc->tickets = ticket;
+  remain_ticket -= ticket;
+  st_proc->pass = pq_top(&st_queue)->pass;
+  st_proc->pid = st_proc->p_proc->pid;
+  st_proc->p_proc->is_stride = 1;
+  st_proc->p_proc->st_proc = st_proc;
+  pq_push(&st_queue,st_proc);
+  return 0; 
+}
+
+
+
+void
+setlevel(struct mlfq_proc* mf_proc, uint level)
+{
+  mf_proc->level = level;
+  mf_proc->p_proc->level = level;
+  if(level == HIGH_LV) {
+    mf_proc->time_allot = HIGH_ALLOT;
+    mf_proc->time_quantum = HIGH_QNT;
+  }
+  else if(level == MID_LV) {
+    mf_proc->time_allot = MID_ALLOT;
+    mf_proc->time_quantum = MID_QNT;
+  }
+  else {
+    mf_proc->time_allot = BOOST_TICK;
+    mf_proc->time_quantum = LOW_QNT;
+  }
+  return;
+}
+
 void
 pinit(void)
 {
+  int i = 0;
+  struct stride_proc* st_proc;
   initlock(&ptable.lock, "ptable");
+  for( i =0; i< NPROC; i++)
+    st_proc_list[i].is_free = FREE;
+  for( i=0; i< CQ_SIZE; i++)
+    mf_proc_list[i].is_free = FREE;
+  pq_init(&st_queue);
+  mlfq_init(&mlfq);
+  st_proc = getfreest_proc();
+  st_proc->is_process = MLFQ;
+  st_proc->tickets =MIN_MLFQ_TICKET;
+  st_proc->pass = 0;
+  remain_ticket = MAX_TICKET - MIN_MLFQ_TICKET;
+  pq_push(&st_queue,st_proc);
+
 }
 
 // Must be called with interrupts disabled
@@ -138,7 +230,7 @@ userinit(void)
   p->tf->eflags = FL_IF;
   p->tf->esp = PGSIZE;
   p->tf->eip = 0;  // beginning of initcode.S
-
+  
   safestrcpy(p->name, "initcode", sizeof(p->name));
   p->cwd = namei("/");
 
@@ -149,6 +241,19 @@ userinit(void)
   acquire(&ptable.lock);
 
   p->state = RUNNABLE;
+  {
+
+    struct mlfq_proc* mf_proc= getfreemf_proc();
+    mf_proc->p_proc = p;
+    mf_proc->pid = p->pid;
+    setlevel(mf_proc,HIGH_LV);
+
+    mlfq_push(&mlfq,mf_proc);
+    p->is_stride = MLFQ;
+    p->mf_proc = mf_proc;
+    p->tick_used = 0;
+    p->is_sys_yield = 0;
+  }
 
   release(&ptable.lock);
 }
@@ -215,6 +320,20 @@ fork(void)
   acquire(&ptable.lock);
 
   np->state = RUNNABLE;
+  {
+    struct mlfq_proc* mf_proc= getfreemf_proc();
+    mf_proc->p_proc = np;
+    mf_proc->pid = np->pid;
+    setlevel(mf_proc,HIGH_LV);
+    mlfq_push(&mlfq,mf_proc);
+    printk_str("fork");
+    printk_str(curproc->name);
+    mlfq_push(&mlfq,curproc->mf_proc);
+    np->is_stride = MLFQ;
+    np->mf_proc = mf_proc;
+    np->tick_used = 0;
+    np->is_sys_yield = 0;
+  }
 
   release(&ptable.lock);
 
@@ -325,6 +444,174 @@ scheduler(void)
   struct proc *p;
   struct cpu *c = mycpu();
   c->proc = 0;
+printk_str("start scheduler");
+  for(;;){
+    // Enable interrupts on this processor.
+    sti();
+
+    // Loop over process table looking for process to run.
+    acquire(&ptable.lock);
+    //start of stride scheduler.
+    {
+      int tick_used = 0;
+      struct stride_proc* st_proc = 0;
+      pq_init(&pq_tmp);
+      while(!st_proc) {
+        st_proc = pq_top(&st_queue);
+        pq_pop(&st_queue);
+
+  //printk_str("start stride scheduler");
+        if(st_proc->is_process && st_proc->p_proc->is_stride) {
+          if(st_proc->p_proc->state != RUNNABLE) {
+            
+            if(st_proc == st_proc->p_proc->st_proc&&!st_proc->p_proc->killed&& st_proc->p_proc->state != ZOMBIE) {
+              pq_push(&pq_tmp,st_proc);
+            }
+            st_proc =0;
+
+            continue;
+          }
+          else {
+            st_proc->is_free = INUSE;
+            p = st_proc->p_proc;
+            c->proc = p;
+            switchuvm(p);
+            p->state = RUNNING;
+      //printk_str("before swtch");
+            swtch(&(c->scheduler), p->context);
+      //printk_str("after swtch");
+            switchkvm();
+            c->proc = 0;
+            break;
+          }
+        }
+        //start of mlfq scheduler.
+        else {
+          cq_init(&cq_tmp);
+          struct mlfq_proc* mf_proc = 0;
+          
+            
+          while(!mf_proc)
+          {
+  //printk_str("before top");
+
+            mf_proc = mlfq_top(&mlfq);
+  //printk_str("after top");
+            mlfq_pop(&mlfq);
+            if(mf_proc->p_proc->killed || mf_proc->p_proc->pid != mf_proc->pid || mf_proc->p_proc->is_stride) {
+  //printk_str("not valid");
+              mf_proc = 0;
+              break;
+            }
+            else {
+                if(mf_proc->p_proc->state != RUNNABLE) {
+      
+                  if(!mf_proc->p_proc->killed&& mf_proc->p_proc->state != ZOMBIE) {
+        
+                      cq_push(&cq_tmp,mf_proc);
+                    }
+                  mf_proc = 0;
+                  if(mlfq_isempty(&mlfq))
+                    break;
+
+                  continue;
+                }
+                else {
+                  mf_proc->is_free = INUSE;
+                  p = mf_proc->p_proc;
+                  c->proc = p;
+                  switchuvm(p);
+                  p->state = RUNNING;
+      //printk_str("before swtch");
+                  swtch(&(c->scheduler), p->context);
+      //printk_str("after swtch");
+                  switchkvm();
+                  tick_used = p->tick_used;
+                  mlfq.ticks += tick_used;
+                  if(tick_used == mf_proc->time_allot) {
+                    p->tick_used = 0;
+                    (mf_proc->level)++;
+                    if(mf_proc->level > LOW_LV)
+                      mf_proc->level = LOW_LV;
+                    setlevel(mf_proc,mf_proc->level);
+                  }
+                  mlfq_push(&mlfq,mf_proc);
+                  if(mlfq.ticks >= BOOST_TICK)
+                    mlfq_boosting(&mlfq);
+                  // Process is done running for now.
+                  // It should have changed its p->state before coming back.
+                  c->proc = 0;
+      printk_str("else");
+
+                  break;
+                }
+            }
+          };
+  //printk_str("while end");
+                    
+          while(!cq_isempty(&cq_tmp)) {
+            //printk_str("cq pop");
+            struct mlfq_proc* mf_proc = cq_top(&cq_tmp);
+            //printk_str("pop");
+            cq_pop(&cq_tmp);
+            mlfq_push(&mlfq,mf_proc);
+          };
+          
+                  
+
+        }
+        //end of mlfq scheduler.
+      };
+      while(!pq_isempty(&pq_tmp))
+      {
+        struct stride_proc* st_proc = pq_top(&pq_tmp);
+        pq_pop(&pq_tmp);
+        pq_push(&pq_tmp,st_proc);
+      }
+
+      if(st_proc->is_process)
+        st_proc->pass += MAX_TICKET/(st_proc->tickets);
+      else
+        st_proc->pass += (MAX_TICKET/(st_proc->tickets+remain_ticket))*tick_used;
+      
+      if(!st_proc->is_process || st_proc->p_proc->is_stride)
+        pq_push(&st_queue,st_proc);
+    }
+    //end of stride scheduler.
+
+    /*
+    for(p = ptable.proc; p < &ptable.proc[NPROC]; p++){
+      if(p->state != RUNNABLE)
+        continue;
+
+      // Switch to chosen process.  It is the process's job
+      // to release ptable.lock and then reacquire it
+      // before jumping back to us.
+      c->proc = p;
+      switchuvm(p);
+      p->state = RUNNING;
+
+      swtch(&(c->scheduler), p->context);
+      switchkvm();
+
+      // Process is done running for now.
+      // It should have changed its p->state before coming back.
+      c->proc = 0;*/
+      release(&ptable.lock);
+  }
+
+
+
+
+}
+
+/*
+void
+scheduler(void)
+{
+  struct proc *p;
+  struct cpu *c = mycpu();
+  c->proc = 0;
   
   for(;;){
     // Enable interrupts on this processor.
@@ -354,6 +641,8 @@ scheduler(void)
 
   }
 }
+*/
+
 
 // Enter scheduler.  Must hold only ptable.lock
 // and have changed proc->state. Saves and restores
@@ -386,8 +675,13 @@ void
 yield(void)
 {
   acquire(&ptable.lock);  //DOC: yieldlock
-  myproc()->state = RUNNABLE;
-  sched();
+  struct proc* mp = myproc();
+  mp->state = RUNNABLE;
+  mp->tick_used++;
+  if(mp->is_sys_yield || mp->is_stride || ((struct mlfq_proc*)(mp->mf_proc))->time_allot == mp->tick_used ) {
+    mp->is_sys_yield = 0;
+    sched();
+  }
   release(&ptable.lock);
 }
 

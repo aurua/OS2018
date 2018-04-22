@@ -1,3 +1,4 @@
+#define _queue_h
 #ifndef _types_h
     #include "types.h"
 #endif
@@ -23,10 +24,15 @@
 #define HIGH_ALLOT 5
 #define MID_ALLOT 10
 #define BOOST_TICK 100
-
+#define FREE 1
+#define INUSE 0
+#define PROCESS 1
+#define MLFQ 0
 struct stride_proc {
+    uint is_free;
     uint is_process;
     struct proc *p_proc;
+    uint pid;
     uint tickets;
     uint pass;
 };
@@ -41,6 +47,7 @@ void pq_push(struct priority_queue *pq, struct stride_proc *st_proc);
 void pq_pop(struct priority_queue *pq);
 
 struct mlfq_proc {
+    uint is_free;
     struct proc *p_proc;
     uint pid;
     uint time_quantum;

@@ -444,8 +444,26 @@ sys_pipe(void)
   return 0;
 }
 
-void
+int
 sys_yield(void)
 {
-  yield();  
+  struct proc *curproc = myproc();
+  curproc->is_sys_yield = 1;
+  yield();
+  return 0;
+}
+
+int
+sys_getlev(void)
+{
+  return getlev();
+}
+
+int
+sys_setcpushare(void)
+{
+  int share;
+  if (argint(0,&share) < 0)
+        return -1;
+  return setcpushare(share);
 }

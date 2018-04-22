@@ -37,6 +37,7 @@ pq_push(struct priority_queue *pq, struct stride_proc *st_proc)
 {
     uint cur;
     pq->p_procs[++pq->size] = st_proc;
+    st_proc->is_free = INUSE;
     cur = pq->size;
     while(cur/2 > 0 && stride_cmp(pq->p_procs[cur/2],pq->p_procs[cur])) {
         stride_swap(pq->p_procs[cur/2],pq->p_procs[cur]);
@@ -49,6 +50,7 @@ pq_pop(struct priority_queue *pq)
 {
     uint cur;
     pq->p_procs[1] = pq->p_procs[pq->size--];
+    pq->p_procs[1]->is_free = FREE;
     cur = 1;
     while(cur * 2 <= pq->size)
     {
@@ -64,11 +66,12 @@ pq_pop(struct priority_queue *pq)
     return;
 }
 
+
 void 
 cq_init(struct circular_queue *cq)
 {
-    cq->front = -1;
-    cq->rear = -1;
+    cq->front = 0;
+    cq->rear = 0;
     return;
 }
 uint 
@@ -86,14 +89,15 @@ cq_top(struct circular_queue *cq)
 void 
 cq_push(struct circular_queue *cq, struct mlfq_proc *mf_proc)
 {
-    cq->rear++;
+    cq->p_procs[cq->rear++] = mf_proc;
     cq->rear %= CQ_SIZE;
-    cq->p_procs[cq->rear] = mf_proc;
+    mf_proc->is_free = INUSE;
     return;
 }
 void 
 cq_pop(struct circular_queue *cq)
 {
+    cq->p_procs[cq->front]->is_free=FREE;
     cq->front++;
     cq->front %= CQ_SIZE;
     return;
@@ -103,27 +107,32 @@ cq_pop(struct circular_queue *cq)
 void 
 mlfq_init(struct mlf_queue* mlfq)
 {
+    int i;
     mlfq->ticks = 0;
+    for(i =0; i < 3; i++ )
+        cq_init(&mlfq->cq[i]);
 }
 uint 
 mlfq_isempty(struct mlf_queue* mlfq)
 {
     int i;
-    for(i =0; i< 3; ++i) {
+    for(i =HIGH_LV; i<= LOW_LV; ++i) {
         if(!cq_isempty( &(mlfq->cq[i]) ) )
-            return 1;
+            return 0;
     }
-    return 0;
+    return 1;
 }
+
 struct mlfq_proc* 
 mlfq_top(struct mlf_queue* mlfq)
 {
     int i;
-    for(i =0; i< 3; ++i) {
+    for(i = HIGH_LV; i<= LOW_LV; ++i) {
         if(!cq_isempty( &(mlfq->cq[i]) ) )
             return cq_top( &(mlfq->cq[i]));
     }
-    panic("mlfq is empty!");
+    //panic("empty");
+    panic(mlfq->cq[0].p_procs[0]->p_proc->name);
     return (void*)0;
 }
 
@@ -143,20 +152,26 @@ mlfq_pop(struct mlf_queue* mlfq)
             return;
         }
     }
+    return;
 }
 void
 mlfq_boosting(struct mlf_queue* mlfq)
 {
+
     int i = 0; int iter_front = mlfq->cq[HIGH_LV].front;
     while(iter_front != mlfq->cq[HIGH_LV].rear) {
-        struct mlfq_proc* pr= mlfq->cq[HIGH_LV].p_procs[iter_front];
+        struct mlfq_proc* pr= mlfq->cq[HIGH_LV].p_procs[iter_front++];
+        pr->p_proc->tick_used = 0;
         pr->time_allot = HIGH_ALLOT;
         pr->time_quantum = HIGH_QNT;
+        iter_front %= CQ_SIZE;
     }
 
-    for (i =MID_LV; i<= HIGH_LV ; ++i) {
+    for (i =MID_LV; i<= LOW_LV ; ++i) {
         while( !cq_isempty(&mlfq->cq[i]) ) {
             struct mlfq_proc* pr= cq_top(&mlfq->cq[i]);
+            pr->p_proc->level = HIGH_LV;
+            pr->p_proc->tick_used = 0;
             pr->level = HIGH_LV;
             pr->time_allot = HIGH_ALLOT;
             pr->time_quantum = HIGH_QNT;
@@ -165,5 +180,6 @@ mlfq_boosting(struct mlf_queue* mlfq)
                 cq_push(&mlfq->cq[HIGH_LV],pr);
         }
     }
-
+    mlfq->ticks = 0;
+    return;
 }
